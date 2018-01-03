@@ -1,0 +1,172 @@
+// Do not mess with the following 6 lines
+plugins {
+    id 'com.github.johnrengelman.shadow' version '1.2.4'
+    id 'org.hidetake.ssh' version '2.8.0'
+}
+
+apply plugin: 'java'
+apply plugin: 'application'
+
+//Windows
+//ext.buildType = "windows"
+// generic armhf (Beaglebone/Jetson)
+//ext.buildType = "armhf"
+
+// Change the line below if you change the name of your main Java class
+mainClassName = 'org.usfirst.frc.team1018.vision.Main'
+// Change the line below to change the name of the output jar
+def jarBaseName = 'VisionSystem'
+
+ext {
+    buildType = "arm-raspbian"
+    remoteDirectory = '/home/pi/vision'
+}
+
+remotes {
+    raspberryPi {
+        host = '10.10.18.3'
+        user = 'pi'
+        password = 'raspberry'
+    }
+}
+
+ssh.settings {
+    knownHosts = allowAnyHosts
+}
+
+task deploy {
+    doLast {
+        ssh.run {
+            session(remotes.raspberryPi) {
+                put shadowJar.archivePath, '/home/pi/org.usfirst.frc.team1018.vision/VisionSystem-all.jar'
+                put "${buildDir}/run${jarBaseName}", "${remoteDirectory}"
+                execute 'sudo service org.usfirst.frc.team1018.vision restart'
+            }
+        }
+    }
+}
+
+// Shouldn't need to change anything below this point
+apply from: 'dependencies.gradle'
+
+repositories {
+    mavenCentral()
+    maven {
+        url "http://first.wpi.edu/FRC/roborio/maven/release"
+    }
+}
+
+dependencies {
+    compile ntcoreDep()
+    compile cscoreDep()
+    compile 'org.opencv:opencv-java:+'
+    compile 'org.tinylog:tinylog:1.2'
+    compile fileTree(dir: 'libs', include: ['*.jar'])
+}
+
+jar {
+    baseName = jarBaseName
+    doLast {
+        manifest {
+            attributes (
+                    'Main-Class': 'org.usfirst.frc.team1018.vision.Main',
+                    'Build-Type': getOpenCvPlatformPackage()
+            )
+        }
+    }
+}
+
+shadowJar {
+    baseName = jarBaseName
+}
+
+distributions {
+    main {
+        baseName = jarBaseName
+        contents {
+            from(openCvUnzipLocation) {
+                exclude 'META-INF'
+                exclude '**/MANIFEST.MF'
+                into 'bin/'
+            }
+        }
+    }
+}
+
+processResources {
+    dependsOn unzipOpenCv
+    from openCvUnzipLocation
+}
+
+def outputDirectory = file("${rootDir}/vision_output")
+
+task writeExecuteScript() {
+    dependsOn jar
+    doLast {
+        if (buildType == "windows") {
+            def runFile = new File("${buildDir}/run${jarBaseName}.bat")
+            runFile.write "java -Djava.library.path=. -jar ${jarBaseName}-all.jar"
+        } else {
+            def runFile = new File("${buildDir}/run${jarBaseName}")
+            runFile.write "java -Djava.library.path=. -jar ${jarBaseName}-all.jar"
+        }
+    }
+}
+
+task copyToOutput(type: Copy) {
+    dependsOn shadowJar
+    dependsOn unzipOpenCv
+    dependsOn writeExecuteScript
+    destinationDir = outputDirectory
+    from(file(shadowJar.archivePath)) {
+    }
+    from(openCvUnzipLocation) {
+        exclude 'META-INF'
+        exclude '**/MANIFEST.MF'
+    }
+    if (buildType == "windows") {
+        from(file("${buildDir}/run${jarBaseName}.bat")) {
+        }
+    } else {
+        from(file("${buildDir}/run${jarBaseName}")) {
+        }
+    }
+}
+task copyToUpload(type: Copy) {
+    dependsOn
+}
+
+task zipOutput(type: Zip) {
+    baseName = jarBaseName
+    duplicatesStrategy = 'exclude'
+    dependsOn shadowJar
+    dependsOn unzipOpenCv
+    destinationDir = outputDirectory
+    from(file(shadowJar.archivePath)) {
+    }
+    from(openCvUnzipLocation) {
+        exclude 'META-INF'
+        exclude '**/MANIFEST.MF'
+    }
+    if (buildType == "windows") {
+        from(file("${buildDir}/run${jarBaseName}.bat")) {
+        }
+    } else {
+        from(file("${buildDir}/run${jarBaseName}")) {
+            fileMode 0777
+        }
+    }
+}
+
+distZip.dependsOn unzipOpenCv
+distTar.dependsOn unzipOpenCv
+
+applicationDefaultJvmArgs = ["-Djava.library.path=${openCvUnzipLocation}"]
+
+build.dependsOn copyToOutput
+build.dependsOn zipOutput
+run.dependsOn unzipOpenCv
+
+clean {
+    delete outputDirectory
+}
